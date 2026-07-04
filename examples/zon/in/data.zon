@@ -1,0 +1,13 @@
+.{
+    .function = .{
+        .{ .name = "main", .in = 0, .out = 1 },
+    },
+    .start = 0,
+    .code = .{
+        .{
+            .locals = 0,
+            .ops = .{ "const", "0", "read" },
+        },
+    },
+    .data = "abcd",
+}

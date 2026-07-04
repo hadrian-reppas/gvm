@@ -1,0 +1,15 @@
+.{
+    .function = .{
+        .{ .name = "main", .in = 0, .out = 1 },
+    },
+    .global = .{
+        .{ .name = "x", .init = 5 },
+    },
+    .start = 0,
+    .code = .{
+        .{
+            .locals = 0,
+            .ops = .{ "const", "1" },
+        },
+    },
+}

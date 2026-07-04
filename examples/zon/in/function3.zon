@@ -1,0 +1,22 @@
+.{
+    .function = .{
+        .{ .name = "add", .in = 2, .out = 1 },
+        .{ .name = "dupe", .in = 1, .out = 2 },
+        .{ .name = "main", .in = 0, .out = 1 },
+    },
+    .start = 2,
+    .code = .{
+        .{
+            .locals = 0,
+            .ops = .{ "get_local", "0", "get_local", "1", "add" },
+        },
+        .{
+            .locals = 0,
+            .ops = .{ "get_local", "0", "get_local", "0" },
+        },
+        .{
+            .locals = 0,
+            .ops = .{ "const", "2", "call", "1", "call", "0" },
+        },
+    },
+}

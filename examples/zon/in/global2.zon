@@ -1,0 +1,16 @@
+.{
+    .function = .{
+        .{ .name = "main", .in = 0, .out = 1 },
+    },
+    .global = .{
+        .{ .name = "count", .init = 0 },
+        .{ .name = "min_i32", .init = 2147483647 },
+    },
+    .start = 0,
+    .code = .{
+        .{
+            .locals = 0,
+            .ops = .{ "const", "1" },
+        },
+    },
+}
