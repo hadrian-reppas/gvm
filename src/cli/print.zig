@@ -10,9 +10,18 @@ pub fn main(gpa: std.mem.Allocator, io: std.Io, args: Args) !u8 {
     const bytes = try common.readAlloc(gpa, io, args._path);
     defer gpa.free(bytes);
 
+    const reader = try gvm.parse.ModuleReader.init(bytes);
+
+    try printModule(stdout, reader);
+
+    try stdout.flush();
+    return 0;
+}
+
+fn printModule(stdout: *std.Io.Writer, module_reader: gvm.parse.ModuleReader) !void {
+    var reader = module_reader;
     try stdout.writeAll("(module\n");
-    var module_reader = try gvm.parse.ModuleReader.init(bytes);
-    while (try module_reader.next()) |item| {
+    while (try reader.next()) |item| {
         switch (item) {
             .function => |f| try printFunction(stdout, f.reader),
             .memory => |m| {
@@ -27,21 +36,22 @@ pub fn main(gpa: std.mem.Allocator, io: std.Io, args: Args) !u8 {
             },
             .code => |c| try printCode(stdout, c.reader),
             .data => |d| {
-                try stdout.print("  (data {s})\n", .{d.data});
+                try stdout.writeAll("  (data ");
+                try printBytes(stdout, d.data);
+                try stdout.writeAll(")\n");
             },
         }
     }
-
     try stdout.writeAll(")\n");
-    try stdout.flush();
-    return 0;
 }
 
 fn printFunction(stdout: *std.Io.Writer, function_reader: gvm.parse.FunctionReader) !void {
     var reader = function_reader;
     try stdout.writeAll("  (function\n");
     while (try reader.next()) |decl| {
-        try stdout.print("    (func {s} {} {})\n", .{ decl.name, decl.in, decl.out });
+        try stdout.writeAll("    (func ");
+        try printBytes(stdout, decl.name);
+        try stdout.print(" {} {})\n", .{ decl.in, decl.out });
     }
     try stdout.writeAll("  )\n");
 }
@@ -50,7 +60,9 @@ fn printGlobal(stdout: *std.Io.Writer, global_reader: gvm.parse.GlobalReader) !v
     var reader = global_reader;
     try stdout.writeAll("  (global\n");
     while (try reader.next()) |decl| {
-        try stdout.print("    ({s} {})\n", .{ decl.name, decl.init });
+        try stdout.writeAll("    (");
+        try printBytes(stdout, decl.name);
+        try stdout.print(" {})\n", .{decl.init});
     }
     try stdout.writeAll("  )\n");
 }
@@ -80,4 +92,17 @@ fn printCode(stdout: *std.Io.Writer, code_reader: gvm.parse.CodeReader) !void {
         try stdout.writeAll("    )\n");
     }
     try stdout.writeAll("  )\n");
+}
+
+fn printBytes(stdout: *std.Io.Writer, bytes: []const u8) !void {
+    try stdout.writeAll("\"");
+    for (bytes) |byte| {
+        switch (byte) {
+            '"' => try stdout.writeAll("\\\""),
+            '\\' => try stdout.writeAll("\\\\"),
+            ' '...'!', '#'...'[', ']'...'~' => try stdout.writeByte(byte),
+            else => try stdout.print("\\x{x:0>2}", .{byte}),
+        }
+    }
+    try stdout.writeAll("\"");
 }

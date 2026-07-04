@@ -289,6 +289,7 @@ pub const FunctionDecl = struct {
     out: u32,
 };
 
+// TODO: Rename to GlobalDef?
 pub const GlobalDecl = struct {
     name: []const u8,
     init: u32,
@@ -318,6 +319,8 @@ fn parseIntSection(bytes: []const u8) !u32 {
 // 1. produces better errors
 // 2. keeps track of the offset within the byecode file
 // 3. has a slice function that returns another Reader
+
+// TODO: Reject invalid utf8 in function decls and global defs
 
 pub const ModuleReader = struct {
     reader: std.Io.Reader,
