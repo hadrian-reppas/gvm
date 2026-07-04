@@ -387,12 +387,9 @@ fn GenericReader(comptime Item: type) type {
         reader: std.Io.Reader,
         remaining: u32,
 
-        const is_function_reader = std.meta.eql(Item, FunctionDecl);
-
         fn init(bytes: []const u8) !@This() {
             var reader = std.Io.Reader.fixed(bytes);
             const count = try reader.takeLeb128(u32);
-            if (is_function_reader and count == 0) return error.InvalidBytecode;
             return .{ .reader = reader, .remaining = count };
         }
 
@@ -405,7 +402,7 @@ fn GenericReader(comptime Item: type) type {
             if (!std.unicode.utf8ValidateSlice(name))
                 return error.InvalidBytecode;
             self.remaining -= 1;
-            if (is_function_reader) {
+            if (std.meta.eql(Item, FunctionDecl)) {
                 const in = try self.reader.takeLeb128(u32);
                 const out = try self.reader.takeLeb128(u32);
                 return .{ .name = name, .in = in, .out = out };
