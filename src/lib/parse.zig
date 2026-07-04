@@ -382,56 +382,44 @@ pub const ModuleReader = struct {
     }
 };
 
-// TODO: Share code with GlobalReader?
-pub const FunctionReader = struct {
-    reader: std.Io.Reader,
-    remaining: u32,
+fn GenericReader(comptime Item: type) type {
+    return struct {
+        reader: std.Io.Reader,
+        remaining: u32,
 
-    fn init(bytes: []const u8) !FunctionReader {
-        var reader = std.Io.Reader.fixed(bytes);
-        const function_count = try reader.takeLeb128(u32);
-        if (function_count == 0) return error.InvalidBytecode;
-        return .{ .reader = reader, .remaining = function_count };
-    }
+        const is_function_reader = std.meta.eql(Item, FunctionDecl);
 
-    pub fn next(self: *FunctionReader) !?FunctionDecl {
-        if (empty(self.reader) != (self.remaining == 0))
-            return error.InvalidBytecode;
-        if (self.remaining == 0) return null;
-        const name_length = try self.reader.takeLeb128(u32);
-        const name = try self.reader.take(@intCast(name_length));
-        if (std.unicode.utf8ValidateSlice(name))
-            return error.InvalidBytecode;
-        const in = try self.reader.takeLeb128(u32);
-        const out = try self.reader.takeLeb128(u32);
-        self.remaining -= 1;
-        return .{ .name = name, .in = in, .out = out };
-    }
-};
+        fn init(bytes: []const u8) !@This() {
+            var reader = std.Io.Reader.fixed(bytes);
+            const count = try reader.takeLeb128(u32);
+            if (is_function_reader and count == 0) return error.InvalidBytecode;
+            return .{ .reader = reader, .remaining = count };
+        }
 
-pub const GlobalReader = struct {
-    reader: std.Io.Reader,
-    remaining: u32,
+        pub fn next(self: *@This()) !?Item {
+            if (empty(self.reader) != (self.remaining == 0))
+                return error.InvalidBytecode;
+            if (self.remaining == 0) return null;
+            const name_length = try self.reader.takeLeb128(u32);
+            const name = try self.reader.take(@intCast(name_length));
+            if (!std.unicode.utf8ValidateSlice(name))
+                return error.InvalidBytecode;
+            self.remaining -= 1;
+            if (is_function_reader) {
+                const in = try self.reader.takeLeb128(u32);
+                const out = try self.reader.takeLeb128(u32);
+                return .{ .name = name, .in = in, .out = out };
+            } else {
+                const initializer = try self.reader.takeLeb128(u32);
+                return .{ .name = name, .init = initializer };
+            }
+        }
+    };
+}
 
-    fn init(bytes: []const u8) !GlobalReader {
-        var reader = std.Io.Reader.fixed(bytes);
-        const global_count = try reader.takeLeb128(u32);
-        return .{ .reader = reader, .remaining = global_count };
-    }
+pub const FunctionReader = GenericReader(FunctionDecl);
 
-    pub fn next(self: *GlobalReader) !?GlobalDef {
-        if (empty(self.reader) != (self.remaining == 0))
-            return error.InvalidBytecode;
-        if (self.remaining == 0) return null;
-        const name_length = try self.reader.takeLeb128(u32);
-        const name = try self.reader.take(@intCast(name_length));
-        if (std.unicode.utf8ValidateSlice(name))
-            return error.InvalidBytecode;
-        const initializer = try self.reader.takeLeb128(u32);
-        self.remaining -= 1;
-        return .{ .name = name, .init = initializer };
-    }
-};
+pub const GlobalReader = GenericReader(GlobalDef);
 
 pub const CodeReader = struct {
     reader: std.Io.Reader,
