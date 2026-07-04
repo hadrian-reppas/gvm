@@ -299,20 +299,71 @@ pub const FunctionDef = struct {
     reader: OpReader,
 };
 
-fn remaining(reader: std.Io.Reader) usize {
-    return reader.buffer.len - reader.seek;
-}
+const Reader = struct {
+    reader: std.Io.Reader,
+    base: usize,
 
-fn empty(reader: std.Io.Reader) bool {
-    return remaining(reader) == 0;
-}
+    fn init(bytes: []const u8, base: usize) Reader {
+        const reader = std.Io.Reader.fixed(bytes);
+        return .{ .reader = reader, .base = base };
+    }
 
-fn parseIntSection(bytes: []const u8) !u32 {
-    var reader = std.Io.Reader.fixed(bytes);
-    const value = try reader.takeLeb128(u32);
-    if (!empty(reader)) return error.InvalidBytecode;
-    return value;
-}
+    fn slice(self: *Reader, length: usize) !Reader {
+        const base = self.offset();
+        const bytes = try mapErr(self.reader.take(length));
+        return Reader.init(bytes, base);
+    }
+
+    fn rest(self: Reader) []const u8 {
+        return self.reader.buffer[self.reader.seek..];
+    }
+
+    fn remaining(self: Reader) usize {
+        return self.rest().len;
+    }
+
+    fn empty(self: Reader) bool {
+        return self.remaining() == 0;
+    }
+
+    fn offset(self: Reader) usize {
+        return self.base + self.reader.seek;
+    }
+
+    fn MapErr(comptime T: type) type {
+        return error{InvalidBytecode}!@typeInfo(T).error_union.payload;
+    }
+
+    fn mapErr(value: anytype) MapErr(@TypeOf(value)) {
+        return value catch error.InvalidBytecode;
+    }
+
+    fn take(self: *Reader, n: usize) ![]const u8 {
+        return mapErr(self.reader.take(n));
+    }
+
+    fn takeUtf8(self: *Reader, n: usize) ![]const u8 {
+        const bytes = try self.take(n);
+        if (!std.unicode.utf8ValidateSlice(bytes))
+            return error.InvalidBytecode;
+        return bytes;
+    }
+
+    fn takeU32(self: *Reader) !u32 {
+        return mapErr(self.reader.takeLeb128(u32));
+    }
+
+    fn takeEnum(self: *Reader, comptime Enum: type) !Enum {
+        comptime std.debug.assert(@sizeOf(Enum) == 1);
+        return mapErr(self.reader.takeEnum(Enum, .little));
+    }
+
+    fn takeU32Section(self: *Reader) !u32 {
+        const value = try self.takeU32();
+        if (!self.empty()) return error.InvalidBytecode;
+        return value;
+    }
+};
 
 // TODO: Wrap std.Io.Reader with a custom Reader type that
 // 1. produces better errors
@@ -321,14 +372,14 @@ fn parseIntSection(bytes: []const u8) !u32 {
 // 4. has a takeUtf8 function
 
 pub const ModuleReader = struct {
-    reader: std.Io.Reader,
+    reader: Reader,
     prev_section: ?SectionTag = null,
     function_count: ?u32 = null,
 
     pub fn init(bytes: []const u8) !ModuleReader {
         const expected = magic ++ version;
 
-        var reader = std.Io.Reader.fixed(bytes);
+        var reader = Reader.init(bytes, 0);
         const header = try reader.take(expected.len);
         if (!std.mem.eql(u8, header, &expected))
             return error.InvalidBytecode;
@@ -342,72 +393,72 @@ pub const ModuleReader = struct {
         self.prev_section = section.section;
         switch (section.section) {
             .function => {
-                const reader = try FunctionReader.init(section.bytes);
+                const reader = try FunctionReader.init(section.reader);
                 self.function_count = reader.remaining;
                 return .{ .function = .{ .reader = reader, .function_count = reader.remaining } };
             },
             .memory => {
-                const size = try parseIntSection(section.bytes);
+                var reader = section.reader;
+                const size = try reader.takeU32Section();
                 return .{ .memory = .{ .memory_size = size } };
             },
             .global => {
-                const reader = try GlobalReader.init(section.bytes);
+                const reader = try GlobalReader.init(section.reader);
                 return .{ .global = .{ .reader = reader, .global_count = reader.remaining } };
             },
             .start => {
-                const id = try parseIntSection(section.bytes);
+                var reader = section.reader;
+                const id = try reader.takeU32Section();
                 return .{ .start = .{ .function_id = id } };
             },
             .code => {
-                const reader = try CodeReader.init(section.bytes);
+                const reader = try CodeReader.init(section.reader);
                 if (reader.remaining != self.function_count.?)
                     return error.InvalidBytecode;
                 return .{ .code = .{ .reader = reader, .function_count = reader.remaining } };
             },
-            .data => return .{ .data = .{ .data = section.bytes } },
+            .data => return .{ .data = .{ .data = section.reader.rest() } },
         }
     }
 
-    const SectionBytes = struct {
+    const SectionReader = struct {
         section: SectionTag,
-        bytes: []const u8,
+        reader: Reader,
     };
 
-    fn nextSection(self: *ModuleReader) !?SectionBytes {
-        if (empty(self.reader)) return null;
-        const section = try self.reader.takeEnum(SectionTag, .little);
-        const length = try self.reader.takeLeb128(u32);
-        const bytes = try self.reader.take(@intCast(length));
-        return .{ .section = section, .bytes = bytes };
+    fn nextSection(self: *ModuleReader) !?SectionReader {
+        if (self.reader.empty()) return null;
+        const section = try self.reader.takeEnum(SectionTag);
+        const length = try self.reader.takeU32();
+        const reader = try self.reader.slice(length);
+        return .{ .section = section, .reader = reader };
     }
 };
 
 fn GenericReader(comptime Item: type) type {
     return struct {
-        reader: std.Io.Reader,
+        reader: Reader,
         remaining: u32,
 
-        fn init(bytes: []const u8) !@This() {
-            var reader = std.Io.Reader.fixed(bytes);
-            const count = try reader.takeLeb128(u32);
-            return .{ .reader = reader, .remaining = count };
+        fn init(reader: Reader) !@This() {
+            var reader_copy = reader;
+            const count = try reader_copy.takeU32();
+            return .{ .reader = reader_copy, .remaining = count };
         }
 
         pub fn next(self: *@This()) !?Item {
-            if (empty(self.reader) != (self.remaining == 0))
+            if (self.reader.empty() != (self.remaining == 0))
                 return error.InvalidBytecode;
             if (self.remaining == 0) return null;
-            const name_length = try self.reader.takeLeb128(u32);
-            const name = try self.reader.take(@intCast(name_length));
-            if (!std.unicode.utf8ValidateSlice(name))
-                return error.InvalidBytecode;
+            const name_length = try self.reader.takeU32();
+            const name = try self.reader.takeUtf8(@intCast(name_length));
             self.remaining -= 1;
-            if (std.meta.eql(Item, FunctionDecl)) {
-                const in = try self.reader.takeLeb128(u32);
-                const out = try self.reader.takeLeb128(u32);
+            if (Item == FunctionDecl) {
+                const in = try self.reader.takeU32();
+                const out = try self.reader.takeU32();
                 return .{ .name = name, .in = in, .out = out };
             } else {
-                const initializer = try self.reader.takeLeb128(u32);
+                const initializer = try self.reader.takeU32();
                 return .{ .name = name, .init = initializer };
             }
         }
@@ -419,48 +470,48 @@ pub const FunctionReader = GenericReader(FunctionDecl);
 pub const GlobalReader = GenericReader(GlobalDef);
 
 pub const CodeReader = struct {
-    reader: std.Io.Reader,
+    reader: Reader,
     remaining: u32,
 
-    fn init(bytes: []const u8) !CodeReader {
-        var reader = std.Io.Reader.fixed(bytes);
-        const function_count = try reader.takeLeb128(u32);
-        return .{ .reader = reader, .remaining = function_count };
+    fn init(reader: Reader) !CodeReader {
+        var reader_copy = reader;
+        const function_count = try reader_copy.takeU32();
+        return .{ .reader = reader_copy, .remaining = function_count };
     }
 
     pub fn next(self: *CodeReader) !?FunctionDef {
-        if (empty(self.reader) != (self.remaining == 0))
+        if (self.reader.empty() != (self.remaining == 0))
             return error.InvalidBytecode;
         if (self.remaining == 0) return null;
-        const length = try self.reader.takeLeb128(u32);
-        const bytes = try self.reader.take(@intCast(length));
-        const reader = try OpReader.init(bytes);
+        const length = try self.reader.takeU32();
+        const reader = try self.reader.slice(@intCast(length));
+        const function_def = try OpReader.init(reader);
         self.remaining -= 1;
-        return reader;
+        return function_def;
     }
 };
 
 pub const OpReader = struct {
-    reader: std.Io.Reader,
+    reader: Reader,
     depth: u32 = 0,
 
-    fn init(bytes: []const u8) !FunctionDef {
-        var reader = std.Io.Reader.fixed(bytes);
-        const locals = try reader.takeLeb128(u32);
-        return .{ .locals = locals, .reader = .{ .reader = reader } };
+    fn init(reader: Reader) !FunctionDef {
+        var reader_copy = reader;
+        const locals = try reader_copy.takeU32();
+        return .{ .locals = locals, .reader = .{ .reader = reader_copy } };
     }
 
     pub fn next(self: *OpReader) !?Op {
-        if (remaining(self.reader) == 0) {
+        if (self.reader.empty()) {
             return null;
-        } else if (remaining(self.reader) == 1) {
-            if (try self.reader.takeByte() != @intFromEnum(OpTag.end))
+        } else if (self.reader.remaining() == 1) {
+            if (try self.reader.takeEnum(OpTag) != OpTag.end)
                 return error.InvalidBytecode;
             if (self.depth != 0)
                 return error.InvalidBytecode;
             return null;
         }
-        const tag = try self.reader.takeEnum(OpTag, .little);
+        const tag = try self.reader.takeEnum(OpTag);
         switch (tag) {
             inline else => |t| {
                 const payload = t.Payload();
@@ -471,11 +522,11 @@ pub const OpReader = struct {
                     }
                     return @unionInit(Op, @tagName(t), {});
                 } else if (payload == u32) {
-                    const value = try self.reader.takeLeb128(u32);
+                    const value = try self.reader.takeU32();
                     return @unionInit(Op, @tagName(t), value);
                 } else {
-                    const in = try self.reader.takeLeb128(u32);
-                    const out = try self.reader.takeLeb128(u32);
+                    const in = try self.reader.takeU32();
+                    const out = try self.reader.takeU32();
                     self.depth += 1;
                     return @unionInit(Op, @tagName(t), .{ .in = in, .out = out });
                 }
