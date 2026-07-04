@@ -318,8 +318,7 @@ fn parseIntSection(bytes: []const u8) !u32 {
 // 1. produces better errors
 // 2. keeps track of the offset within the byecode file
 // 3. has a slice function that returns another Reader
-
-// TODO: Reject invalid utf8 in function decls and global defs
+// 4. has a takeUtf8 function
 
 pub const ModuleReader = struct {
     reader: std.Io.Reader,
@@ -401,6 +400,8 @@ pub const FunctionReader = struct {
         if (self.remaining == 0) return null;
         const name_length = try self.reader.takeLeb128(u32);
         const name = try self.reader.take(@intCast(name_length));
+        if (std.unicode.utf8ValidateSlice(name))
+            return error.InvalidBytecode;
         const in = try self.reader.takeLeb128(u32);
         const out = try self.reader.takeLeb128(u32);
         self.remaining -= 1;
@@ -424,6 +425,8 @@ pub const GlobalReader = struct {
         if (self.remaining == 0) return null;
         const name_length = try self.reader.takeLeb128(u32);
         const name = try self.reader.take(@intCast(name_length));
+        if (std.unicode.utf8ValidateSlice(name))
+            return error.InvalidBytecode;
         const initializer = try self.reader.takeLeb128(u32);
         self.remaining -= 1;
         return .{ .name = name, .init = initializer };
