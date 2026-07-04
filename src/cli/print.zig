@@ -55,10 +55,10 @@ fn printFunction(out: *std.Io.Writer, function_reader: gvm.parse.FunctionReader)
 fn printGlobal(out: *std.Io.Writer, global_reader: gvm.parse.GlobalReader) !void {
     var reader = global_reader;
     try out.writeAll("  (global\n");
-    while (try reader.next()) |decl| {
+    while (try reader.next()) |def| {
         try out.writeAll("    (");
-        try printBytes(out, decl.name);
-        try out.print(" {})\n", .{decl.init});
+        try printBytes(out, def.name);
+        try out.print(" {})\n", .{def.init});
     }
     try out.writeAll("  )\n");
 }

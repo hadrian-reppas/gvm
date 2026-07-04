@@ -16,12 +16,12 @@ const std = @import("std");
 //     0x05 leb128(length)
 //     leb128(memory_size)
 //
-// global_delc ::= leb128(name_length) name leb128(init)
+// global_def ::= leb128(name_length) name leb128(init)
 //
 // global_section ::=
 //     0x06 leb128(length)
 //     leb128(global_count)
-//     global_decl*
+//     global_def*
 //
 // start_section ::=
 //     0x08 leb128(length)
@@ -289,8 +289,7 @@ pub const FunctionDecl = struct {
     out: u32,
 };
 
-// TODO: Rename to GlobalDef?
-pub const GlobalDecl = struct {
+pub const GlobalDef = struct {
     name: []const u8,
     init: u32,
 };
@@ -419,7 +418,7 @@ pub const GlobalReader = struct {
         return .{ .reader = reader, .remaining = global_count };
     }
 
-    pub fn next(self: *GlobalReader) !?GlobalDecl {
+    pub fn next(self: *GlobalReader) !?GlobalDef {
         if (empty(self.reader) != (self.remaining == 0))
             return error.InvalidBytecode;
         if (self.remaining == 0) return null;
