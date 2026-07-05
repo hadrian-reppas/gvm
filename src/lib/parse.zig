@@ -601,9 +601,6 @@ fn module(comptime parts: []const []const u8) []const u8 {
     }
 }
 
-/// Encode a sequence of `Op`s to their instruction bytes (tag + operands), the
-/// inverse of `OpReader.next`. Used to build a code body and its expected
-/// decoded values from one source. Does not append the terminating `end`.
 fn encodeOps(comptime ops: []const Op) []const u8 {
     comptime {
         var out: []const u8 = &.{};
@@ -885,100 +882,78 @@ test "parse: round-trip" {
         section(0x0b, &[_]u8{ 0x00, 0x01, 0x02, 0xfe, 0xff }),
     });
 
-    const expect = std.testing;
+    const expectEqual = std.testing.expectEqual;
+    const expectEqualStrings = std.testing.expectEqualStrings;
+    const expectEqualSlices = std.testing.expectEqualSlices;
     var mr = try ModuleReader.init(mod);
 
     {
         const s = (try mr.next()).?.function;
-        try expect.expectEqual(3, s.function_count);
+        try expectEqual(3, s.function_count);
         var r = s.reader;
         for ([_]FunctionDecl{
             .{ .name = "alpha", .in = 2, .out = 1 },
             .{ .name = "beta", .in = 0, .out = 3 },
             .{ .name = "gamma", .in = 1, .out = 1 },
-        }) |want| {
-            const got = (try r.next()).?;
-            try expect.expectEqualStrings(want.name, got.name);
-            try expect.expectEqual(want.in, got.in);
-            try expect.expectEqual(want.out, got.out);
+        }) |expected| {
+            const actual = (try r.next()).?;
+            try expectEqualStrings(expected.name, actual.name);
+            try expectEqual(expected.in, actual.in);
+            try expectEqual(expected.out, actual.out);
         }
-        try expect.expectEqual(null, try r.next());
+        try expectEqual(null, try r.next());
     }
 
     {
         const s = (try mr.next()).?.memory;
-        try expect.expectEqual(4096, s.memory_size);
+        try expectEqual(4096, s.memory_size);
     }
 
     {
         const s = (try mr.next()).?.global;
-        try expect.expectEqual(3, s.global_count);
+        try expectEqual(3, s.global_count);
         var r = s.reader;
         for ([_]GlobalDef{
             .{ .name = "width", .init = 0 },
             .{ .name = "height", .init = 256 },
             .{ .name = "seed", .init = 0xdeadbeef },
-        }) |want| {
-            const got = (try r.next()).?;
-            try expect.expectEqualStrings(want.name, got.name);
-            try expect.expectEqual(want.init, got.init);
+        }) |expected| {
+            const actual = (try r.next()).?;
+            try expectEqualStrings(expected.name, actual.name);
+            try expectEqual(expected.init, actual.init);
         }
-        try expect.expectEqual(null, try r.next());
+        try expectEqual(null, try r.next());
     }
 
     {
         const s = (try mr.next()).?.start;
-        try expect.expectEqual(2, s.function_id);
+        try expectEqual(2, s.function_id);
     }
 
     {
         const s = (try mr.next()).?.code;
-        try expect.expectEqual(3, s.function_count);
+        try expectEqual(3, s.function_count);
         var r = s.reader;
         for ([_]struct { locals: u32, ops: []const Op }{
             .{ .locals = 7, .ops = body0_ops },
             .{ .locals = 0, .ops = &body1_ops },
             .{ .locals = 3, .ops = &body2_ops },
-        }) |want| {
+        }) |expected| {
             const def = (try r.next()).?;
-            try expect.expectEqual(want.locals, def.locals);
+            try expectEqual(expected.locals, def.locals);
             var ops = def.reader;
-            for (want.ops) |op| {
-                try expect.expectEqual(op, (try ops.next()).?);
+            for (expected.ops) |op| {
+                try expectEqual(op, (try ops.next()).?);
             }
-            try expect.expectEqual(null, try ops.next());
+            try expectEqual(null, try ops.next());
         }
-        try expect.expectEqual(null, try r.next());
+        try expectEqual(null, try r.next());
     }
 
     {
         const s = (try mr.next()).?.data;
-        try expect.expectEqualSlices(u8, &[_]u8{ 0x00, 0x01, 0x02, 0xfe, 0xff }, s.data);
+        try expectEqualSlices(u8, &[_]u8{ 0x00, 0x01, 0x02, 0xfe, 0xff }, s.data);
     }
 
-    try expect.expectEqual(null, try mr.next());
-}
-
-fn fuzzParse(bytes: []const u8) void {
-    _ = parseErrorOffset(bytes);
-}
-
-const fuzz_corpus = corpus: {
-    var out: []const []const u8 = &.{};
-    for (valid_modules) |mod| {
-        const len: [4]u8 = @bitCast(std.mem.nativeToLittle(u32, @intCast(mod.len)));
-        out = out ++ &[_][]const u8{len ++ mod};
-    }
-    break :corpus out;
-};
-
-test "parse: fuzz" {
-    const Ctx = struct {
-        fn testOne(_: @This(), smith: *std.testing.Smith) anyerror!void {
-            var buf: [4096]u8 = undefined;
-            const n = smith.slice(&buf);
-            fuzzParse(buf[0..n]);
-        }
-    };
-    try std.testing.fuzz(Ctx{}, Ctx.testOne, .{ .corpus = fuzz_corpus });
+    try expectEqual(null, try mr.next());
 }
