@@ -153,7 +153,7 @@ pub const SectionTag = enum(u8) {
 
 pub const BlockType = struct { in: u32, out: u32 };
 
-pub const OpTag = enum(u8) {
+pub const InstrTag = enum(u8) {
     @"unreachable" = 0x00,
     nop = 0x01,
     block = 0x02,
@@ -242,7 +242,7 @@ pub const OpTag = enum(u8) {
     row = 0x96,
     col = 0x97,
 
-    pub fn Payload(comptime self: OpTag) type {
+    pub fn Payload(comptime self: InstrTag) type {
         return switch (self) {
             .block, .loop, .@"if", .@"else" => BlockType,
             .br,
@@ -259,14 +259,14 @@ pub const OpTag = enum(u8) {
     }
 };
 
-pub const Op = blk: {
-    const names = std.meta.fieldNames(OpTag);
+pub const Instr = blk: {
+    const names = std.meta.fieldNames(InstrTag);
     var types = [_]type{undefined} ** names.len;
     const attrs = [_]std.builtin.Type.UnionField.Attributes{.{}} ** names.len;
     for (names, 0..) |name, i| {
-        types[i] = @field(OpTag, name).Payload();
+        types[i] = @field(InstrTag, name).Payload();
     }
-    break :blk @Union(.auto, OpTag, names, &types, &attrs);
+    break :blk @Union(.auto, InstrTag, names, &types, &attrs);
 };
 
 pub const Section = union(SectionTag) {
@@ -528,17 +528,17 @@ pub const OpReader = struct {
         return .{ .locals = locals, .reader = .{ .reader = reader_copy } };
     }
 
-    pub fn next(self: *OpReader) !?Op {
+    pub fn next(self: *OpReader) !?Instr {
         if (self.reader.empty()) {
             return null;
         } else if (self.reader.remaining() == 1) {
-            if (try self.reader.takeEnum(OpTag) != OpTag.end)
+            if (try self.reader.takeEnum(InstrTag) != InstrTag.end)
                 return error.InvalidBytecode;
             if (self.depth != 0)
                 return error.InvalidBytecode;
             return null;
         }
-        const tag = try self.reader.takeEnum(OpTag);
+        const tag = try self.reader.takeEnum(InstrTag);
         switch (tag) {
             inline else => |t| {
                 const payload = t.Payload();
@@ -547,15 +547,15 @@ pub const OpReader = struct {
                         if (self.depth == 0) return error.InvalidBytecode;
                         self.depth -= 1;
                     }
-                    return @unionInit(Op, @tagName(t), {});
+                    return @unionInit(Instr, @tagName(t), {});
                 } else if (payload == u32) {
                     const value = try self.reader.takeU32();
-                    return @unionInit(Op, @tagName(t), value);
+                    return @unionInit(Instr, @tagName(t), value);
                 } else {
                     const in = try self.reader.takeU32();
                     const out = try self.reader.takeU32();
                     self.depth += 1;
-                    return @unionInit(Op, @tagName(t), .{ .in = in, .out = out });
+                    return @unionInit(Instr, @tagName(t), .{ .in = in, .out = out });
                 }
             },
         }
@@ -601,7 +601,7 @@ fn module(comptime parts: []const []const u8) []const u8 {
     }
 }
 
-fn encodeOps(comptime ops: []const Op) []const u8 {
+fn encodeOps(comptime ops: []const Instr) []const u8 {
     comptime {
         var out: []const u8 = &.{};
         for (ops) |op| switch (op) {
@@ -848,15 +848,15 @@ test "parse: error offsets" {
 
 test "parse: round-trip" {
     const void_ops = comptime ops: {
-        var ops: []const Op = &.{};
-        for (std.meta.fields(OpTag)) |f| {
-            const tag: OpTag = @enumFromInt(f.value);
+        var ops: []const Instr = &.{};
+        for (std.meta.fields(InstrTag)) |f| {
+            const tag: InstrTag = @enumFromInt(f.value);
             if (tag == .end or tag.Payload() != void) continue;
-            ops = ops ++ &[_]Op{@unionInit(Op, f.name, {})};
+            ops = ops ++ &[_]Instr{@unionInit(Instr, f.name, {})};
         }
         break :ops ops;
     };
-    const operand_ops = [_]Op{
+    const operand_ops = [_]Instr{
         .{ .br = 3 },                        .{ .br_if = 7 },                      .{ .call = 1 },
         .{ .get_local = 0 },                 .{ .set_local = 4 },                  .{ .get_global = 2 },
         .{ .set_global = 5 },                .{ .@"const" = 0xdeadbeef },          .{ .block = .{ .in = 1, .out = 2 } },
@@ -865,8 +865,8 @@ test "parse: round-trip" {
         .{ .end = {} },
     };
     const body0_ops = void_ops ++ &operand_ops;
-    const body1_ops = [_]Op{ .{ .get_local = 0 }, .{ .get_local = 1 }, .{ .add = {} }, .{ .@"return" = {} } };
-    const body2_ops = [_]Op{ .{ .@"const" = 42 }, .{ .drop = {} } };
+    const body1_ops = [_]Instr{ .{ .get_local = 0 }, .{ .get_local = 1 }, .{ .add = {} }, .{ .@"return" = {} } };
+    const body2_ops = [_]Instr{ .{ .@"const" = 42 }, .{ .drop = {} } };
 
     const mod = comptime module(&.{
         section(0x03, leb128(3) ++
@@ -934,7 +934,7 @@ test "parse: round-trip" {
         const s = (try mr.next()).?.code;
         try expectEqual(3, s.function_count);
         var r = s.reader;
-        for ([_]struct { locals: u32, ops: []const Op }{
+        for ([_]struct { locals: u32, ops: []const Instr }{
             .{ .locals = 7, .ops = body0_ops },
             .{ .locals = 0, .ops = &body1_ops },
             .{ .locals = 3, .ops = &body2_ops },
