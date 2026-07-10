@@ -1,5 +1,6 @@
 const std = @import("std");
 
+// TODO: Add CheckArgs with limits
 pub const PrintArgs = struct { _path: [:0]const u8, color: bool = false };
 pub const RunArgs = struct {
     _path: [:0]const u8,

@@ -2,6 +2,7 @@ const std = @import("std");
 const gvm = @import("gvm");
 const args = @import("args.zig");
 const print = @import("print.zig");
+const check = @import("check.zig");
 
 pub fn main(init: std.process.Init) !u8 {
     const gpa = init.gpa;
@@ -14,7 +15,7 @@ pub fn main(init: std.process.Init) !u8 {
     const cmd = try args.parse(arg_slice);
 
     return switch (cmd) {
-        .check => @panic("todo"),
+        .check => |check_args| check.main(gpa, io, check_args),
         .print => |print_args| print.main(gpa, io, print_args),
         .run => @panic("todo"),
     };

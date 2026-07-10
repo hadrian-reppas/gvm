@@ -151,7 +151,7 @@ pub const SectionTag = enum(u8) {
     }
 };
 
-pub const BlockType = struct { in: u32, out: u32 };
+pub const Sig = struct { in: u32, out: u32 };
 
 pub const InstrTag = enum(u8) {
     @"unreachable" = 0x00,
@@ -244,7 +244,7 @@ pub const InstrTag = enum(u8) {
 
     pub fn Payload(comptime self: InstrTag) type {
         return switch (self) {
-            .block, .loop, .@"if", .@"else" => BlockType,
+            .block, .loop, .@"if" => Sig,
             .br,
             .br_if,
             .call,
@@ -255,6 +255,87 @@ pub const InstrTag = enum(u8) {
             .@"const",
             => u32,
             else => void,
+        };
+    }
+
+    pub fn signature(self: InstrTag) ?Sig {
+        return switch (self) {
+            .nop => .{ .in = 0, .out = 0 },
+            .@"const",
+            .self,
+            .east,
+            .northeast,
+            .north,
+            .northwest,
+            .west,
+            .southwest,
+            .south,
+            .southeast,
+            .time,
+            .age,
+            .row,
+            .col,
+            => .{ .in = 0, .out = 1 },
+            .drop => .{ .in = 1, .out = 0 },
+            .load,
+            .load8_s,
+            .load8_u,
+            .load16_s,
+            .load16_u,
+            .read,
+            .read8_s,
+            .read8_u,
+            .read16_s,
+            .read16_u,
+            .eqz,
+            .clz,
+            .ctz,
+            .popcnt,
+            => .{ .in = 1, .out = 1 },
+            .store, .store8, .store16 => .{ .in = 2, .out = 0 },
+            .eq,
+            .ne,
+            .lt_s,
+            .lt_u,
+            .gt_s,
+            .gt_u,
+            .le_s,
+            .le_u,
+            .ge_s,
+            .ge_u,
+            .add,
+            .sub,
+            .mul,
+            .div_s,
+            .div_u,
+            .rem_s,
+            .rem_u,
+            .@"and",
+            .@"or",
+            .xor,
+            .shl,
+            .shr_s,
+            .shr_u,
+            .rotl,
+            .rotr,
+            => .{ .in = 2, .out = 1 },
+            .copy, .move => .{ .in = 3, .out = 0 },
+            .select => .{ .in = 3, .out = 1 },
+            .@"unreachable",
+            .block,
+            .loop,
+            .@"if",
+            .@"else",
+            .end,
+            .br,
+            .br_if,
+            .@"return",
+            .call,
+            .get_local,
+            .set_local,
+            .get_global,
+            .set_global,
+            => null,
         };
     }
 };
@@ -300,7 +381,7 @@ pub const GlobalDef = struct {
 
 pub const FunctionDef = struct {
     locals: u32,
-    reader: OpReader,
+    reader: InstrReader,
 };
 
 const Reader = struct {
@@ -341,6 +422,7 @@ const Reader = struct {
     }
 
     fn mapErr(value: anytype) MapErr(@TypeOf(value)) {
+        // TODO: use multiple, more descriptive errors
         return value catch error.InvalidBytecode;
     }
 
@@ -508,17 +590,16 @@ pub const CodeReader = struct {
         if (self.remaining == 0) return null;
         const length = try self.reader.takeU32();
         const reader = try self.reader.slice(@intCast(length));
-        const function_def = try OpReader.init(reader);
+        const function_def = try InstrReader.init(reader);
         self.remaining -= 1;
         return function_def;
     }
 };
 
-pub const OpReader = struct {
+pub const InstrReader = struct {
     reader: Reader,
-    depth: u32 = 0,
 
-    pub fn errorOffset(self: OpReader) usize {
+    pub fn errorOffset(self: InstrReader) usize {
         return self.reader.errorOffset();
     }
 
@@ -528,14 +609,8 @@ pub const OpReader = struct {
         return .{ .locals = locals, .reader = .{ .reader = reader_copy } };
     }
 
-    pub fn next(self: *OpReader) !?Instr {
+    pub fn next(self: *InstrReader) !?Instr {
         if (self.reader.empty()) {
-            return null;
-        } else if (self.reader.remaining() == 1) {
-            if (try self.reader.takeEnum(InstrTag) != InstrTag.end)
-                return error.InvalidBytecode;
-            if (self.depth != 0)
-                return error.InvalidBytecode;
             return null;
         }
         const tag = try self.reader.takeEnum(InstrTag);
@@ -543,10 +618,6 @@ pub const OpReader = struct {
             inline else => |t| {
                 const payload = t.Payload();
                 if (payload == void) {
-                    if (t == .end) {
-                        if (self.depth == 0) return error.InvalidBytecode;
-                        self.depth -= 1;
-                    }
                     return @unionInit(Instr, @tagName(t), {});
                 } else if (payload == u32) {
                     const value = try self.reader.takeU32();
@@ -554,7 +625,6 @@ pub const OpReader = struct {
                 } else {
                     const in = try self.reader.takeU32();
                     const out = try self.reader.takeU32();
-                    self.depth += 1;
                     return @unionInit(Instr, @tagName(t), .{ .in = in, .out = out });
                 }
             },
@@ -610,7 +680,7 @@ fn encodeOps(comptime ops: []const Instr) []const u8 {
                 const Payload = @TypeOf(payload);
                 if (Payload == u32) {
                     out = out ++ leb128(payload);
-                } else if (Payload == BlockType) {
+                } else if (Payload == Sig) {
                     out = out ++ leb128(payload.in) ++ leb128(payload.out);
                 }
             },
@@ -804,8 +874,6 @@ const invalid_modules = [_]struct { bytes: []const u8, offset: usize }{
     .{ .bytes = module(&.{ function_main, section(0x05, &[_]u8{ 0x10, 0x00 }) }), .offset = 20 },
 
     // Malformed instruction streams
-    .{ .bytes = module(&.{ function_main, start_first, section(0x0a, &[_]u8{ 0x01, 0x03, 0x00, 0x0b, 0x0b }) }), .offset = 26 },
-    .{ .bytes = module(&.{ function_main, start_first, section(0x0a, leb128(1) ++ functionBody(0, &[_]u8{ 0x02, 0x00, 0x00 })) }), .offset = 29 },
     .{ .bytes = module(&.{ function_main, start_first, section(0x0a, leb128(1) ++ functionBody(0, &[_]u8{0x60})) }), .offset = 26 },
 };
 
@@ -860,9 +928,9 @@ test "parse: round-trip" {
         .{ .br = 3 },                        .{ .br_if = 7 },                      .{ .call = 1 },
         .{ .get_local = 0 },                 .{ .set_local = 4 },                  .{ .get_global = 2 },
         .{ .set_global = 5 },                .{ .@"const" = 0xdeadbeef },          .{ .block = .{ .in = 1, .out = 2 } },
-        .{ .loop = .{ .in = 0, .out = 0 } }, .{ .@"if" = .{ .in = 3, .out = 1 } }, .{ .@"else" = .{ .in = 2, .out = 2 } },
-        .{ .end = {} },                      .{ .end = {} },                       .{ .end = {} },
-        .{ .end = {} },
+        .{ .loop = .{ .in = 0, .out = 0 } }, .{ .@"if" = .{ .in = 3, .out = 1 } }, .@"else",
+        .end,                                .end,                                 .end,
+        .end,
     };
     const body0_ops = void_ops ++ &operand_ops;
     const body1_ops = [_]Instr{ .{ .get_local = 0 }, .{ .get_local = 1 }, .{ .add = {} }, .{ .@"return" = {} } };
@@ -943,8 +1011,9 @@ test "parse: round-trip" {
             try expectEqual(expected.locals, def.locals);
             var ops = def.reader;
             for (expected.ops) |op| {
-                try expectEqual(op, (try ops.next()).?);
+                try expectEqual(op, try ops.next());
             }
+            try expectEqual(.end, try ops.next());
             try expectEqual(null, try ops.next());
         }
         try expectEqual(null, try r.next());
