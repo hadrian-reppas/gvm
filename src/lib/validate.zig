@@ -59,9 +59,11 @@ pub const Validator = struct {
     }
 
     pub fn validateStart(self: *const Validator, start_function_id: u32) !void {
-        if (@as(usize, @intCast(start_function_id)) >= self.function_signatures.items.len) {
+        if (@as(usize, @intCast(start_function_id)) >= self.function_signatures.items.len)
             return error.InvalidBytecode; // TODO: Use multiple, more descriptive errors
-        }
+        const sig = self.function_signatures.items[@intCast(start_function_id)];
+        if (sig.in != 0 or sig.out != 0)
+            return error.InvalidBytecode;
     }
 
     pub fn enterFunctionBody(self: *Validator, total_locals: u32, returns: u32) !void {
