@@ -57,6 +57,7 @@ const std = @import("std");
 //     0x34                                     => read16_u
 //     0x35                                     => copy
 //     0x36                                     => move
+//     0x37                                     => fill
 //     0x41 leb128(value)                       => const
 //     0x45                                     => eqz
 //     0x46                                     => eq
@@ -193,6 +194,7 @@ pub const InstrTag = enum(u8) {
     read16_u = 0x34,
     copy = 0x35,
     move = 0x36,
+    fill = 0x37,
 
     @"const" = 0x41,
 
@@ -319,7 +321,7 @@ pub const InstrTag = enum(u8) {
             .rotl,
             .rotr,
             => .{ .in = 2, .out = 1 },
-            .copy, .move => .{ .in = 3, .out = 0 },
+            .copy, .move, .fill => .{ .in = 3, .out = 0 },
             .select => .{ .in = 3, .out = 1 },
             .@"unreachable",
             .block,

@@ -842,6 +842,7 @@ test "validate: coverage" {
 
         .row, .col, .time, .copy, // 0 -> 0
         .col, .row, .age, .move, // 0 -> 0
+        .row, .col, .time, .fill, // 0 -> 0
 
         .east, .west, .{ .@"const" = 0 }, .select, // 0 -> 1
 
