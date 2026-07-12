@@ -1,6 +1,8 @@
 const std = @import("std");
 const parse = @import("parse.zig");
 
+const Allocator = std.mem.Allocator;
+
 const Frame = struct {
     const Kind = enum { function, block, loop, @"if", @"else" };
 
@@ -15,84 +17,102 @@ const Frame = struct {
 };
 
 pub const Validator = struct {
-    gpa: std.mem.Allocator,
-    function_signatures: std.ArrayList(parse.Sig),
+    gpa: Allocator,
+    function_validator: ?FunctionValidator,
+    function_sigs: std.ArrayList(parse.Sig),
     globals: u32,
 
+    pub fn init(gpa: Allocator) Validator {
+        return .{
+            .gpa = gpa,
+            .function_validator = null,
+            .function_sigs = .empty,
+            .globals = 0,
+        };
+    }
+
+    pub fn deinit(self: *Validator) void {
+        self.function_sigs.deinit(self.gpa);
+        if (self.function_validator) |*v|
+            v.control_frames.deinit(self.gpa);
+        self.* = undefined;
+    }
+
+    pub fn functionCount(self: *Validator, count: u32) !void {
+        // TODO: check count against limits
+        if (count > 0) {
+            self.function_sigs = try .initCapacity(self.gpa, @intCast(count));
+        }
+    }
+
+    pub fn functionDecl(self: *Validator, decl: parse.FunctionDecl) void {
+        // TODO: check decl.in and decl.out against limits
+        self.function_sigs.appendAssumeCapacity(.{ .in = decl.in, .out = decl.out });
+    }
+
+    pub fn memorySize(self: *const Validator, size: u32) !void {
+        // TODO: check size against limits
+        _ = self;
+        _ = size;
+    }
+
+    pub fn globalCount(self: *Validator, count: u32) !void {
+        // TODO: check count against limits
+        self.globals = count;
+    }
+
+    pub fn start(self: *const Validator, function_id: u32) !void {
+        const index: usize = @intCast(function_id);
+        if (index >= self.function_sigs.items.len)
+            return error.InvalidBytecode; // TODO: Use multiple, more descriptive errors
+        const sig = self.function_sigs.items[index];
+        if (sig.in != 0 or sig.out != 0)
+            return error.InvalidBytecode;
+    }
+
+    pub fn functionBody(self: *Validator, params: u32, locals: u32, returns: u32) !*FunctionValidator {
+        // TODO: check locals against limits
+        // TODO: reuse control_frames allocation
+        std.debug.assert(self.function_validator == null);
+        self.function_validator = .{
+            .validator = self,
+            .total_locals = params + locals,
+            .return_values = returns,
+            .stack_size = 0,
+            .max_stack_size = 0,
+            .control_frames = .empty,
+        };
+        try self.function_validator.?.pushFrame(.function, .{ .in = 0, .out = returns });
+        return &self.function_validator.?;
+    }
+};
+
+pub const FunctionValidator = struct {
+    validator: *Validator,
     total_locals: u32,
     return_values: u32,
     stack_size: u32,
     max_stack_size: u32,
     control_frames: std.ArrayList(Frame),
 
-    pub fn init(gpa: std.mem.Allocator) Validator {
-        return .{
-            .gpa = gpa,
-            .function_signatures = .empty,
-            .globals = 0,
-            .total_locals = undefined,
-            .return_values = undefined,
-            .stack_size = undefined,
-            .max_stack_size = undefined,
-            .control_frames = .empty,
-        };
-    }
-
-    pub fn deinit(self: *Validator) void {
-        self.function_signatures.deinit(self.gpa);
-        self.control_frames.deinit(self.gpa);
-        self.* = undefined;
-    }
-
-    pub fn declareFunctionCount(self: *Validator, count: u32) !void {
-        if (count > 0) {
-            self.function_signatures = try .initCapacity(self.gpa, @intCast(count));
-        }
-    }
-
-    pub fn declareFunction(self: *Validator, decl: parse.FunctionDecl) void {
-        self.function_signatures.appendAssumeCapacity(.{ .in = decl.in, .out = decl.out });
-    }
-
-    pub fn declareGlobalCount(self: *Validator, count: u32) void {
-        self.globals = count;
-    }
-
-    pub fn validateStart(self: *const Validator, start_function_id: u32) !void {
-        if (@as(usize, @intCast(start_function_id)) >= self.function_signatures.items.len)
-            return error.InvalidBytecode; // TODO: Use multiple, more descriptive errors
-        const sig = self.function_signatures.items[@intCast(start_function_id)];
-        if (sig.in != 0 or sig.out != 0)
-            return error.InvalidBytecode;
-    }
-
-    pub fn enterFunctionBody(self: *Validator, total_locals: u32, returns: u32) !void {
-        self.total_locals = total_locals;
-        self.return_values = returns;
-        self.stack_size = 0;
-        self.max_stack_size = 0;
-        try self.pushFrame(.function, .{ .in = 0, .out = returns });
-    }
-
-    pub fn exitFunctionBody(self: *Validator) !void {
+    pub fn finish(self: *FunctionValidator) !void {
         if (self.control_frames.items.len != 0)
             return error.InvalidBytecode;
-        self.total_locals = undefined;
-        self.return_values = undefined;
-        self.stack_size = undefined;
-        self.max_stack_size = undefined;
+        self.control_frames.deinit(self.validator.gpa);
+        self.validator.function_validator = null;
     }
 
-    pub fn validateInstr(self: *Validator, instr: parse.Instr) !void {
-        _ = try self.peekFrame();
+    pub fn instr(self: *FunctionValidator, inst: parse.Instr) !void {
+        if (self.control_frames.items.len == 0)
+            return error.InvalidBytecode;
 
-        if (std.meta.activeTag(instr).signature()) |sig| {
+        if (std.meta.activeTag(inst).signature()) |sig| {
             try self.popValues(sig.in);
-            try self.pushValues(sig.out);
+            self.pushValues(sig.out);
             return;
         }
 
-        switch (instr) {
+        switch (inst) {
             .@"unreachable" => try self.markUnreachable(),
             .block => |sig| {
                 try self.popValues(sig.in);
@@ -117,7 +137,7 @@ pub const Validator = struct {
                 if (frame.kind == .@"if" and frame.sig.in != frame.sig.out)
                     return error.InvalidBytecode;
                 if (self.control_frames.items.len > 0)
-                    try self.pushValues(frame.sig.out);
+                    self.pushValues(frame.sig.out);
             },
             .br => |l| {
                 const frame = try self.frameForLabel(l);
@@ -127,91 +147,92 @@ pub const Validator = struct {
             .br_if => |l| {
                 const frame = try self.frameForLabel(l);
                 try self.popValues(frame.jumpValues() + 1);
-                try self.pushValues(frame.jumpValues());
+                self.pushValues(frame.jumpValues());
             },
             .@"return" => {
                 try self.popValues(self.return_values);
                 try self.markUnreachable();
             },
-            .call => |i| if (i < self.function_signatures.items.len) {
-                const sig = self.function_signatures.items[i];
+            .call => |i| if (i < self.validator.function_sigs.items.len) {
+                const sig = self.validator.function_sigs.items[i];
                 try self.popValues(sig.in);
-                try self.pushValues(sig.out);
+                self.pushValues(sig.out);
             } else {
                 return error.InvalidBytecode;
             },
             .get_local => |i| {
                 if (i >= self.total_locals) return error.InvalidBytecode;
-                try self.pushValues(1);
+                self.pushValues(1);
             },
             .set_local => |i| {
                 if (i >= self.total_locals) return error.InvalidBytecode;
                 try self.popValues(1);
             },
             .get_global => |i| {
-                if (i >= self.globals) return error.InvalidBytecode;
-                try self.pushValues(1);
+                if (i >= self.validator.globals) return error.InvalidBytecode;
+                self.pushValues(1);
             },
             .set_global => |i| {
-                if (i >= self.globals) return error.InvalidBytecode;
+                if (i >= self.validator.globals) return error.InvalidBytecode;
                 try self.popValues(1);
             },
             else => unreachable,
         }
     }
 
-    fn markUnreachable(self: *Validator) !void {
-        const frame = try self.peekFrame();
+    fn markUnreachable(self: *FunctionValidator) !void {
+        const frame = self.peekFrame();
         frame.@"unreachable" = true;
         self.stack_size = frame.stack_size;
     }
 
-    fn pushFrame(self: *Validator, kind: Frame.Kind, sig: parse.Sig) !void {
-        try self.control_frames.append(self.gpa, .{
+    fn pushFrame(self: *FunctionValidator, kind: Frame.Kind, sig: parse.Sig) Allocator.Error!void {
+        try self.control_frames.append(self.validator.gpa, .{
             .kind = kind,
             .sig = sig,
             .stack_size = self.stack_size,
             .@"unreachable" = false,
         });
-        try self.pushValues(sig.in);
+        self.pushValues(sig.in);
     }
 
-    fn popFrame(self: *Validator) !Frame {
-        const frame = try self.peekFrame();
+    fn popFrame(self: *FunctionValidator) !Frame {
+        const frame = self.peekFrame();
         try self.popValues(frame.sig.out);
         if (self.stack_size != frame.stack_size)
             return error.InvalidBytecode;
         return self.control_frames.pop().?;
     }
 
-    fn peekFrame(self: *Validator) !*Frame {
-        return self.frameForLabel(0);
+    fn peekFrame(self: *FunctionValidator) *Frame {
+        return self.frameForLabel(0) catch unreachable;
     }
 
-    fn frameForLabel(self: *Validator, l: u32) !*Frame {
+    fn frameForLabel(self: *FunctionValidator, l: u32) !*Frame {
         if (l < self.control_frames.items.len) {
-            return &self.control_frames.items[self.control_frames.items.len - @as(usize, @intCast(l)) - 1];
+            return &self.control_frames.items[
+                self.control_frames.items.len - @as(usize, @intCast(l)) - 1
+            ];
         } else {
             return error.InvalidBytecode;
         }
     }
 
-    fn pushValues(self: *Validator, n: u32) !void {
+    fn pushValues(self: *FunctionValidator, n: u32) void {
         self.stack_size += n;
         if (self.stack_size > self.max_stack_size)
             self.max_stack_size = self.stack_size;
     }
 
-    fn popValues(self: *Validator, n: u32) !void {
-        const frame = try self.peekFrame();
+    fn popValues(self: *FunctionValidator, n: u32) !void {
+        const frame = self.peekFrame();
         if (frame.@"unreachable") {
             self.stack_size -= @min(n, self.stack_size - frame.stack_size);
-            return;
-        }
-        if (n > self.stack_size or self.stack_size - n < frame.stack_size) {
+        } else if (n > self.stack_size or self.stack_size - n < frame.stack_size) {
             return error.InvalidBytecode;
+        } else {
+            self.stack_size -= n;
         }
-        self.stack_size -= n;
     }
 };
 
@@ -227,19 +248,19 @@ const Test = struct {
 fn invalidInstructionIndex(t: Test) !?usize {
     var validator = Validator.init(std.testing.allocator);
     defer validator.deinit();
-    try validator.declareFunctionCount(@intCast(t.functions.len));
+    try validator.functionCount(@intCast(t.functions.len));
     for (t.functions) |f| {
-        validator.declareFunction(.{ .name = "", .in = f.in, .out = f.out });
+        validator.functionDecl(.{ .name = "", .in = f.in, .out = f.out });
     }
-    validator.declareGlobalCount(t.globals);
-    try validator.enterFunctionBody(t.in + t.locals, t.out);
+    try validator.globalCount(t.globals);
+    var function_validator = try validator.functionBody(t.in, t.locals, t.out);
     for (t.instrs, 0..) |instr, i| {
-        validator.validateInstr(instr) catch |err| switch (err) {
+        function_validator.instr(instr) catch |err| switch (err) {
             error.InvalidBytecode => return i,
             else => return err,
         };
     }
-    validator.exitFunctionBody() catch |err| switch (err) {
+    function_validator.finish() catch |err| switch (err) {
         error.InvalidBytecode => return t.instrs.len,
     };
     return null;

@@ -1,4 +1,5 @@
 const std = @import("std");
+const validate = @import("validate.zig");
 
 // magic ::= 0x67 0x76 0x6d 0x00
 // version ::= 0x01 0x00 0x00 0x00
@@ -464,6 +465,7 @@ const Reader = struct {
 
 pub const ModuleReader = struct {
     reader: Reader,
+    validator: ?*validate.Validator,
     prev_section: ?SectionTag = null,
     function_count: ?u32 = null,
 
@@ -471,14 +473,14 @@ pub const ModuleReader = struct {
         return self.reader.errorOffset();
     }
 
-    pub fn init(bytes: []const u8) !ModuleReader {
+    pub fn init(bytes: []const u8, validator: ?*validate.Validator) !ModuleReader {
         const expected = magic ++ version;
 
         var reader = Reader.init(bytes, 0);
         const header = try reader.take(expected.len);
         if (!std.mem.eql(u8, header, &expected))
             return error.InvalidBytecode;
-        return .{ .reader = reader };
+        return .{ .reader = reader, .validator = validator };
     }
 
     pub fn next(self: *ModuleReader) !?Section {
@@ -492,26 +494,28 @@ pub const ModuleReader = struct {
         self.prev_section = sec.section;
         switch (sec.section) {
             .function => {
-                const reader = try FunctionReader.init(sec.reader);
+                const reader = try FunctionReader.init(sec.reader, self.validator);
                 self.function_count = reader.remaining;
                 return .{ .function = .{ .reader = reader, .function_count = reader.remaining } };
             },
             .memory => {
                 var reader = sec.reader;
                 const size = try reader.takeU32Section();
+                if (self.validator) |v| try v.memorySize(size);
                 return .{ .memory = .{ .memory_size = size } };
             },
             .global => {
-                const reader = try GlobalReader.init(sec.reader);
+                const reader = try GlobalReader.init(sec.reader, self.validator);
                 return .{ .global = .{ .reader = reader, .global_count = reader.remaining } };
             },
             .start => {
                 var reader = sec.reader;
                 const id = try reader.takeU32Section();
+                if (self.validator) |v| try v.start(id);
                 return .{ .start = .{ .function_id = id } };
             },
             .code => {
-                const reader = try CodeReader.init(sec.reader);
+                const reader = try CodeReader.init(sec.reader, self.validator);
                 if (reader.remaining != self.function_count.?)
                     return error.InvalidBytecode;
                 return .{ .code = .{ .reader = reader, .function_count = reader.remaining } };
@@ -537,16 +541,22 @@ pub const ModuleReader = struct {
 fn GenericReader(comptime Item: type) type {
     return struct {
         reader: Reader,
+        validator: ?*validate.Validator,
         remaining: u32,
 
         pub fn errorOffset(self: @This()) usize {
             return self.reader.errorOffset();
         }
 
-        fn init(reader: Reader) !@This() {
+        fn init(reader: Reader, validator: ?*validate.Validator) !@This() {
             var reader_copy = reader;
             const count = try reader_copy.takeU32();
-            return .{ .reader = reader_copy, .remaining = count };
+            if (Item == FunctionDecl) {
+                if (validator) |v| try v.functionCount(count);
+            } else {
+                if (validator) |v| try v.globalCount(count);
+            }
+            return .{ .reader = reader_copy, .validator = validator, .remaining = count };
         }
 
         pub fn next(self: *@This()) !?Item {
@@ -559,7 +569,9 @@ fn GenericReader(comptime Item: type) type {
             if (Item == FunctionDecl) {
                 const in = try self.reader.takeU32();
                 const out = try self.reader.takeU32();
-                return .{ .name = name, .in = in, .out = out };
+                const decl = FunctionDecl{ .name = name, .in = in, .out = out };
+                if (self.validator) |v| v.functionDecl(decl);
+                return decl;
             } else {
                 const initializer = try self.reader.takeU32();
                 return .{ .name = name, .init = initializer };
@@ -574,16 +586,17 @@ pub const GlobalReader = GenericReader(GlobalDef);
 
 pub const CodeReader = struct {
     reader: Reader,
+    validator: ?*validate.Validator,
     remaining: u32,
 
     pub fn errorOffset(self: CodeReader) usize {
         return self.reader.errorOffset();
     }
 
-    fn init(reader: Reader) !CodeReader {
+    fn init(reader: Reader, validator: ?*validate.Validator) !CodeReader {
         var reader_copy = reader;
         const function_count = try reader_copy.takeU32();
-        return .{ .reader = reader_copy, .remaining = function_count };
+        return .{ .reader = reader_copy, .remaining = function_count, .validator = validator };
     }
 
     pub fn next(self: *CodeReader) !?FunctionDef {
@@ -592,7 +605,11 @@ pub const CodeReader = struct {
         if (self.remaining == 0) return null;
         const length = try self.reader.takeU32();
         const reader = try self.reader.slice(@intCast(length));
-        const function_def = try InstrReader.init(reader);
+        const function_def = try InstrReader.init(
+            reader,
+            self.validator,
+            @intCast(self.remaining),
+        );
         self.remaining -= 1;
         return function_def;
     }
@@ -600,19 +617,33 @@ pub const CodeReader = struct {
 
 pub const InstrReader = struct {
     reader: Reader,
+    validator: ?*validate.FunctionValidator,
 
     pub fn errorOffset(self: InstrReader) usize {
         return self.reader.errorOffset();
     }
 
-    fn init(reader: Reader) !FunctionDef {
+    fn init(reader: Reader, validator: ?*validate.Validator, remaining: usize) !FunctionDef {
         var reader_copy = reader;
         const locals = try reader_copy.takeU32();
-        return .{ .locals = locals, .reader = .{ .reader = reader_copy } };
+        var function_validator: ?*validate.FunctionValidator = null;
+        if (validator) |v| {
+            const index = v.function_sigs.items.len - remaining;
+            const sig = v.function_sigs.items[index];
+            function_validator = try v.functionBody(sig.in, locals, sig.out);
+        }
+        return .{
+            .locals = locals,
+            .reader = .{ .reader = reader_copy, .validator = function_validator },
+        };
     }
 
     pub fn next(self: *InstrReader) !?Instr {
         if (self.reader.empty()) {
+            if (self.validator) |v| {
+                try v.finish();
+                self.validator = null;
+            }
             return null;
         }
         const tag = try self.reader.takeEnum(InstrTag);
@@ -880,7 +911,7 @@ const invalid_modules = [_]struct { bytes: []const u8, offset: usize }{
 };
 
 fn parseErrorOffset(bytes: []const u8) ?usize {
-    var mr = ModuleReader.init(bytes) catch return 0;
+    var mr = ModuleReader.init(bytes, null) catch return 0;
     while (mr.next() catch return mr.errorOffset()) |sec| {
         switch (sec) {
             .function => |f| {
@@ -955,7 +986,7 @@ test "parse: round-trip" {
     const expectEqual = std.testing.expectEqual;
     const expectEqualStrings = std.testing.expectEqualStrings;
     const expectEqualSlices = std.testing.expectEqualSlices;
-    var mr = try ModuleReader.init(mod);
+    var mr = try ModuleReader.init(mod, null);
 
     {
         const s = (try mr.next()).?.function;
